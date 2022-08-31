@@ -1,0 +1,110 @@
+---
+title: RODE Basic Work-Precision Diagrams
+author: Ricardo M. S. Rosa
+---
+
+# RODE Work-Precision Diagrams
+
+In this notebook we will run some simple work-precision diagrams for the RODE integrators. The problems considered here are linear, so analytic solutions are available. 
+
+```julia
+using StochasticDiffEq, Plots, DiffEqDevTools
+gr()
+N = 1000
+```
+
+In this notebook, the error that will be measured is the strong error. The strong error is defined as
+
+$$ E = \mathbb{E}[X_\delta(t) - X(t)] $$
+
+where $X_\delta$ is the numerical approximation to $X$. This is the same as saying, for a given sample trajectory $X(t)$, how well does the numerical trajectory match the real trajectory? Note that this is not how well the mean or other moments match the true mean/variance/etc. (that's the weak error), this is how close the trajectory is to the true trajectory, which is a stronger notion. In a sense, this is measuring convergence (almost surely), rather than just convergence in distribution.
+
+### Linear Homogenous Problem
+
+A linear homogenous RODE is of the form
+$$
+\frac{\mathrm{d}X_{t}}{\mathrm{d}t} = g(t, Y_{t}) X_{t},
+$$
+for a given stochastic process $\{Y_t\}_t$ and a given function $g=g(t, y)$.
+
+The analytic solution is
+$$
+X_{t}=X_{t_0} e^{\int_{t_0}^t g(s, Y_s)\;\mathrm{d}s.
+$$
+
+First, let us solve a scalar case, with a Wiener process as the driving noise and with $g(t, y) = \sin(y)$.
+
+```julia
+g(t, W) = sin(8π * W)
+f(u, t, p, W) = g(t, W) * u
+u0 = 1.0
+tspan = (0.0, 1.0)
+
+function u_analytic!(sol)
+    empty!(sol.u_analytic)
+    integral = 0.0
+    u0 = sol.prob.u0
+    push!(sol.u_analytic, u0)
+    for i in 2:length(sol)
+        integral += (g(sol.W.t[i], sol.W.W[i]) + g(sol.W.t[i-1], sol.W.W[i-1])) * (sol.W.t[i] - sol.W.t[i-1]) / 2
+        push!(sol.u_analytic, u0 * exp(integral))
+    end
+end
+
+#=
+function u_analytic(u0, p, t, W)
+    it = findlast(≤(t), W.t)
+    integral = 0.0
+    if it !== nothing
+        for i in 1:it-1
+            integral += (g(W.t[i+1], W.W[i+1]) + g(W.t[i], W.W[i])) * (W.t[i+1] - W.t[i])
+        end
+    end
+    integral /= 2
+    u = u0 * exp(integral)
+    return u
+end
+=#
+
+ff = RODEFunction(f, analytic=u_analytic!, analytic_full=true)
+prob = RODEProblem(ff, u0, tspan)
+
+sol = solve(prob, RandomHeun(), dt=1/100)
+plot(sol, label="RandomHeun()")
+plot!(sol.t, sol.u_analytic, label="analytic")
+```
+
+```julia
+prob = remake(prob,tspan=(0.0,1.0))
+
+reltols = 1.0 ./ 10.0 .^ (1:5)
+abstols = reltols
+dts = 1.0./5.0.^((1:length(reltols)) .+ 1)
+setups = [
+    Dict(:alg=>RandomEM(), :dts => dts)
+    Dict(:alg=>RandomHeun(), :dts => dts)
+]
+wp = WorkPrecisionSet(prob,abstols,reltols,setups;numruns=N,maxiters=1e7,error_estimate=:l2)
+plot(wp)
+```
+
+We can check the order of convergence of both methods as follows.
+
+```julia
+plt = plot(title="Convergence order", titlefont=10, xscale=:log10, yscale=:log10, xlims=(0.5*minimum(dts), 5*maximum(dts)), ylims=(0.5*minimum(minimum(res.errors) for res in wp.wps), 5*maximum(maximum(res.errors) for res in wp.wps)))
+
+for (i, res) in enumerate(wp.wps)
+    lc, p = [one.(dts) log.(dts)] \ log.(res.errors)
+    linear_fit = exp(lc) * dts .^ p
+    scatter!(plt, dts, res.errors, label=nothing, color=i)
+    plot!(plt, dts, linear_fit, color=i, label="$(res.name); order $(round(p, sigdigits=2))")
+end
+display(plt)
+```
+
+### Conclusion
+
+```julia, echo = false
+using SciMLBenchmarks
+SciMLBenchmarks.bench_footer(WEAVE_ARGS[:folder],WEAVE_ARGS[:file])
+```
